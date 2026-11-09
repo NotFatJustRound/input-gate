@@ -4,7 +4,7 @@
 >
 > 它不是沙箱，也不是安全边界。它只做两件事：让「这段文字来自外部」在上下文里不可忽略，让最脏的那类输入根本进不来。
 
-版本 2.1.0 · 零依赖 · 纯函数
+版本 2.1.1 · 零依赖 · 纯函数
 
 两种用法，同一套规则：
 
@@ -19,12 +19,20 @@
 
 ```bash
 cd ~/.dsh/profiles/desktop
-pnpm add github:NotFatJustRound/input-gate
+pnpm add github:NotFatJustRound/input-gate#main
 ```
+
+> **`#main` 别省。** 不带分支名时 pnpm 会照 lockfile 里那份缓存解析，装回来的可能是旧提交（我第一次升级就还停在 2.1.0）。已经装过的人升级用：
+>
+> ```bash
+> pnpm update input-gate
+> ```
+>
+> 装完看 `~/.dsh/profiles/desktop/node_modules/input-gate/package.json` 里的 `version` 对得上没有，比看日志靠谱。
 
 插件管理器认的是 `package.json` 里的 `dsh.bundle.patch` 声明——**没有它，安装会报「这个包没有声明组合包」**（2.0 就是这个坑，2.1 补上了）。名册补丁在 `cordis.patch.yml`，装完**重启一次 DSH**，工具就出现在工具列表里。
 
-> 本插件只有 Host 半区：不起服务、没有面板、不读写磁盘、不联网，也不注入任何宿主服务。拿不到 `tools` 服务时它只记一条 warn 然后不注册，**绝不会让宿主起不来**。
+> 本插件只有 Host 半区：不起服务、没有面板、不读写磁盘、不联网。它 `inject: ['tools']`——等 tools 服务就绪后再 apply；服务真的缺席时只记一条 warn 然后不注册，**绝不会让宿主起不来**。
 
 ### 工具
 
