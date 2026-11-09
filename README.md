@@ -4,7 +4,50 @@
 >
 > 它不是沙箱，也不是安全边界。它只做两件事：让「这段文字来自外部」在上下文里不可忽略，让最脏的那类输入根本进不来。
 
-版本 2.0.0 · 只用 Python 标准库 · 纯函数，不联网
+版本 2.1.0 · 零依赖 · 纯函数
+
+两种用法，同一套规则：
+
+- **作为 DeepSeek Harness 插件**：装进 DSH，注册一个 `input_gate` 工具，agent 抓完外部内容先过一遍闸再读（`lib/`）。
+- **作为 Python 库 / CLI**：`gate.py`，本地跑、自己接（仓库根目录）。两份实现同规则，改规则请一起改。
+
+---
+
+## 安装（DSH 插件）
+
+在 DSH 的插件管理器里装 Git 仓库，或者手动来一遍：
+
+```bash
+cd ~/.dsh/profiles/desktop
+pnpm add github:NotFatJustRound/input-gate
+```
+
+插件管理器认的是 `package.json` 里的 `dsh.bundle.patch` 声明——**没有它，安装会报「这个包没有声明组合包」**（2.0 就是这个坑，2.1 补上了）。名册补丁在 `cordis.patch.yml`，装完**重启一次 DSH**，工具就出现在工具列表里。
+
+> 本插件只有 Host 半区：不起服务、没有面板、不读写磁盘、不联网，也不注入任何宿主服务。拿不到 `tools` 服务时它只记一条 warn 然后不注册，**绝不会让宿主起不来**。
+
+### 工具
+
+```
+input_gate(text: string, source?: string) → JSON
+```
+
+```json
+{
+  "ok": true,
+  "verdict": "quarantine",
+  "codes": ["DOMAIN_NOT_ALLOWED", "OVERRIDE_ZH"],
+  "truncated": false,
+  "droppedChars": 0,
+  "text": "[UNTRUSTED SOURCE: ... ]\n[输入门：...]\n<<<UNTRUSTED_TEXT\n...正文...\nUNTRUSTED_TEXT>>>"
+}
+```
+
+用法就一句：**别把 `web_fetch` 的返回直接读进上下文，先丢给 `input_gate`，然后只用它返回的 `text`。** `verdict` 是 `reject` 时 `text` 里没有正文——那段内容就等于没进来过。
+
+检测本身出错时返回 `ok: false` 且 `verdict: reject`（fail closed），不把原文当「通过」交出去。
+
+配置写在 `cordis.patch.yml` 的 `config` 里，字段见下面的策略表（camelCase）。
 
 ---
 
@@ -84,19 +127,18 @@ UNTRUSTED_TEXT>>>
 
 | 情况 | 行为 |
 |---|---|
-| 策略文件里有不认识的字段 | 抛 `ValueError`，不猜、不忽略 |
-| 模式名不认识 | 抛 `ValueError` |
-| `max_chars < 1` / `max_base64_run < 16` | 抛 `ValueError` |
-| 策略文件不是合法 JSON | 抛异常，调用方必须当 reject 处理 |
+| 配置里有不认识的字段 | 抛错，工具不注册（插件记 error 后退出，宿主照常） |
+| 模式名不认识 | 抛错 |
+| `maxChars < 1` / `maxBase64Run < 16` | 抛错 |
 | 来源 URL 解析不出 host | `reject` |
 | 正文为空 / 只有空白 | `reject` |
 | 来源缺失 | `quarantine`（`NO_SOURCE`） |
-| 读取失败（CLI） | 退出码 2，不输出任何正文 |
-| 检测过程本身出错 | 抛异常。宁可报错，不返回 pass |
+| 检测过程本身出错 | `reject` + `ok: false`，正文不交付 |
+| 读文件失败（Python CLI） | 退出码 2，不输出任何正文 |
 
 ---
 
-## 用法
+## Python 用法
 
 ```python
 from gate import gate, Policy, Verdict
@@ -105,28 +147,17 @@ policy = Policy(mode="balanced", max_chars=8000)
 result = gate(html_text, source="https://example.com/x", policy=policy)
 
 result.verdict        # Verdict.QUARANTINE
-result.passed         # False
-result.quarantined    # True
-result.blocked        # False
 result.codes          # ['DOMAIN_NOT_ALLOWED', 'OVERRIDE_ZH']
 result.text           # 带横幅与围栏的正文（reject 时是拒绝说明）
-result.truncated      # False
-result.dropped_chars  # 0
+result.blocked        # False
 ```
 
-`gate(text, source, policy, fetched_at="2026-01-01T00:00:00Z")` 可以注入时间，让输出可复现——测试就靠这个，不靠 mock 时钟。
+`gate(text, source, policy, fetched_at="2026-01-01T00:00:00Z")` 可以注入时间，让输出可复现。
 
-**接法建议：** `blocked` 为真时把 `result.text` 原样回给调用者，不要「换个说法再试一次」——重试本身就是绕过闸门。
-
-手册：`REJECTED BY input-gate` 这一行是可 grep 的，日志里搜它就知道有哪些来源被打过。
-
----
-
-## 命令行
+命令行：
 
 ```bash
-python gate.py notes.txt                 # 默认策略
-python gate.py notes.txt policy.json     # 指定策略
+python gate.py notes.txt policy.json
 ```
 
 | 退出码 | 含义 |
@@ -136,34 +167,37 @@ python gate.py notes.txt policy.json     # 指定策略
 | 4 | reject |
 | 2 | 用法错误 / 读不了文件或策略 |
 
-正文走 stdout，裁决与逐条原因此走 stderr，方便 `> out.txt` 之后还能看见判定。
-
 ---
 
-## 策略文件
+## 策略
 
-见 `policy.example.json`：
+插件侧（`cordis.patch.yml` 的 `config`，camelCase）：
 
-```json
-{
-  "mode": "balanced",
-  "max_chars": 8000,
-  "allow_domains": ["github.com", "raw.githubusercontent.com", "docs.python.org", "pypi.org"],
-  "require_https": true,
-  "strip_invisible": true,
-  "max_base64_run": 200,
-  "fence": true
-}
+```yaml
+- insert:
+    - id: input-gate
+      name: input-gate
+      config:
+        enabled: true
+        mode: balanced
+        maxChars: 8000
+        allowDomains: [github.com, docs.python.org]
+        requireHttps: true
+        stripInvisible: true
+        maxBase64Run: 200
+        fence: true
 ```
 
-| 键 | 默认 | 说明 |
+Python 侧见 `policy.example.json`（snake_case，同义）。
+
+| 键（JS / Py） | 默认 | 说明 |
 |---|---|---|
 | `mode` | `balanced` | `strict` / `balanced` / `lenient` |
-| `max_chars` | `8000` | 交付正文字符上限，超出截断并记 `TRUNCATED` |
-| `allow_domains` | 见上 | 后缀匹配，`github.com` 同时匹配 `gist.github.com`，但**不匹配** `github.com.evil.example` |
-| `require_https` | `true` | 明文 http 按来源规则降级 |
-| `strip_invisible` | `true` | 零宽字符先剥离再计数（关掉则只计数、保留原文） |
-| `max_base64_run` | `200` | 连续 base64 字符到这长度就记 `LONG_BASE64` |
+| `maxChars` / `max_chars` | `8000` | 交付正文字符上限，超出截断并记 `TRUNCATED` |
+| `allowDomains` / `allow_domains` | 见上 | 后缀匹配：`github.com` 同时匹配 `gist.github.com`，但**不匹配** `github.com.evil.example` |
+| `requireHttps` / `require_https` | `true` | 明文 http 按来源规则降级 |
+| `stripInvisible` / `strip_invisible` | `true` | 零宽字符先剥离再计数（关掉则只计数、保留原文） |
+| `maxBase64Run` / `max_base64_run` | `200` | 连续 base64 字符到这长度就记 `LONG_BASE64` |
 | `fence` | `true` | 是否给正文加围栏 |
 
 ---
@@ -171,10 +205,11 @@ python gate.py notes.txt policy.json     # 指定策略
 ## 测试
 
 ```bash
-python -m unittest discover -s tests -v
+node --test tests/gate.test.mjs          # JS 版（插件用）
+python -m unittest discover -s tests -v  # Python 版（库/CLI 用）
 ```
 
-纯函数、纯本地、不联网、不花钱。覆盖：三档裁决、白名单（含同形域名 `github.com.evil.example`）、硬规则在 lenient 下仍拒绝、不可见字符剥离、长 base64、截断计数、空内容、策略字段白名单、坏 JSON、横幅可复现。
+纯函数、纯本地、不联网、不花钱。覆盖：三档裁决、白名单（含同形域名 `github.com.evil.example`）、硬规则在 lenient 下仍拒绝、不可见字符剥离、长 base64、截断计数、空内容、配置字段白名单、横幅可复现。
 
 ---
 
@@ -185,12 +220,9 @@ python -m unittest discover -s tests -v
 - **`quarantine` 的内容仍然进上下文。** 那行告示能不能被模型尊重，取决于模型——这是三档里最软的一环，写在这儿就是因为它是软的。
 - **不做 URL 预取。** 链接指向什么由上游抓取器决定，那一步的可信度这道闸管不着。
 - **同形字 / 编码混淆没有处理。** 西里尔字母的 `а`、`\u2010` 连字符、UTF-16 转义串，现在都是原样放行。
+- **两份实现可能漂移。** JS 与 Python 是同规则的两次手写，不共享代码。改规则两边一起改、两边测试一起跑。
 - **不是安全边界。** 真正的隔离在宿主、容器、密钥那一层。同一个 agent 同时握着「私有数据」「外部输入」「对外发请求」三种能力时，这道闸只是把风险显性化，不消除。
 
 ---
-
-## 接入
-
-本仓库只有规则和代码，不依赖运行时。挂到宿主上需要管理员在管理端安装为工具或插件；代码本身不自动生效，也不会自己去找谁要权限。
 
 MIT
