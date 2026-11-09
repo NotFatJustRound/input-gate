@@ -1,13 +1,15 @@
 {
+  "mode": "balanced",
   "max_chars": 8000,
   "allow_domains": [
     "github.com",
     "raw.githubusercontent.com",
     "docs.python.org",
-    "pypi.org"
+    "pypi.org",
+    "developer.mozilla.org"
   ],
+  "require_https": true,
   "strip_invisible": true,
-  "flag_injection": true,
   "max_base64_run": 200,
-  "fence_untrusted": true
+  "fence": true
 }
