@@ -1,6 +1,6 @@
 {
   "name": "input-gate",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "给 agent 的外部输入套一道闸：来源横幅、长度封顶、注入规则；硬规则命中时正文整段不交付。DeepSeek Harness 插件。",
   "type": "module",
   "main": "lib/index.js",
