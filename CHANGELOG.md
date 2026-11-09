@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2.1.1
+
+- 修三处「装得上但工具不出来」的 bug（由 Claude 审码指出，我复核后照改）：
+  - `inject` 从 `[]` 改成 `['tools']`：写成空数组时 `apply` 早于 tools 服务就绪，
+    `ctx.get('tools')` 拿到 `undefined`，降级分支直接 return，工具永远注册不上
+  - 取服务改成 `const tools = ctx?.tools ?? ctx?.get?.('tools')`
+  - `output` 补 `render`：只有 `schema` 时结果渲染不出来
+- 三条都不改变纪律：服务真的缺席时，仍然只是本插件不注册，宿主照常起
+- 注释补上「为什么必须 inject tools」，免得以后又有人顺手改回 `[]`
+
 ## 2.1.0
 
 - 变成**可安装的 DSH 插件**：补 `package.json` 的 `dsh.bundle.patch`、`cordis.patch.yml` 名册、Host 半区 `lib/index.js`，注册 `input_gate` 工具
