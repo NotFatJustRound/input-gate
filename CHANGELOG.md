@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 2.2.0
+
+- 新增**防破甲层**：`ARMOR_RULES` 七条，专管「重排指令层级」的说法
+  - `ARMOR_SELF_CLAIM` 破甲/越狱话术、`ARMOR_PRIORITY` 重写优先级、`ARMOR_LIFT` 要求解除限制、
+    `ARMOR_AUTHORITY` 冒充授权方、`ARMOR_UNBOUND` 要求无约束身份、`ARMOR_DISCLAIMER` 研究免责包装、
+    `ARMOR_SYSTEM_HEADER` 伪造系统段
+- 档位语义：`strict` 直接 reject；`balanced` / `lenient` 一律 quarantine——**破甲话术没有 pass 档**，
+  换措辞可以绕，但「限制已经没了」这种句子不该被判成「没问题」
+- 交付渲染多挂一行 `ARMOR_NOTE`，写明文本里的层级声明不改变运行时规则，也不改变 agent 身份
+- 结果结构新增 `armor_hits` / `armorHits` 与 `armored`；`codes` 里照常带 `ARMOR_*`
+- 新增策略字段 `armor`（默认 `true`）。关掉只影响防破甲层，其他判据不变
+- Python 与 JS 两份实现同步改动；两边测试各补 15 条与 13 条断言
+- README 补「防破甲层」一节，并写清副作用：**讨论破甲的文档自己会被标记**（本 README 亦然）
+
 ## 2.1.1
 
 - 修三处「装得上但工具不出来」的 bug（由 Claude 审码指出，我复核后照改）：
