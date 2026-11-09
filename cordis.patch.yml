@@ -1,0 +1,31 @@
+# input-gate bundle patch：把本插件插进宿主插件名册。
+#
+# 本插件只有 Host 半区（lib/index.js）：注册一个 agent 工具 input_gate，
+# 不起服务、没有面板、没有 client 半区——所以这里不需要 dsh.client 声明。
+#
+# name 必须等于包名。
+- insert:
+    - id: input-gate
+      name: input-gate
+      config:
+        # 关掉就完全不挂载：工具不注册，宿主其它功能照旧。
+        enabled: true
+        # strict / balanced / lenient。硬规则在任何档位都是 reject。
+        mode: balanced
+        # 交付正文字符上限，超出截断并记 TRUNCATED（不改变裁决）。
+        maxChars: 8000
+        # 后缀匹配；github.com 同时匹配 gist.github.com，但不匹配 github.com.evil.example。
+        allowDomains:
+          - github.com
+          - raw.githubusercontent.com
+          - docs.python.org
+          - pypi.org
+          - developer.mozilla.org
+        # 明文 http 按来源规则降级。
+        requireHttps: true
+        # 零宽/双向控制符先剥离再计数。
+        stripInvisible: true
+        # 连续 base64 字符到这个长度记 LONG_BASE64。
+        maxBase64Run: 200
+        # 是否给正文加围栏。
+        fence: true
