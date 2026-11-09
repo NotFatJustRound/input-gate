@@ -31,15 +31,32 @@ agent 读网页、读 issue、读聊天记录的时候，外部文本是直接�
 UNTRUSTED_TEXT>>>
 ```
 
+## 装
+
+插件，装进 DSH 的 profile：
+
+```bash
+pnpm add github:NotFatJustRound/input-gate#main
+```
+
+**`#main` 别省。** 不带分支名时 pnpm 照 lockfile 里那份缓存解析，装回来的可能是旧提交——我升级时就还停在 2.1.0。已经装过的升级用：
+
+```bash
+pnpm update input-gate
+```
+
+装完重启一次 DSH，工具列表里出现 `input_gate` 就成了。想在本地接 Python 版就直接抄 `gate.py`，规则同一套。
+
 ## 它不是安全边界
 
 它挡的是「明显写着"执行这个命令"的文本」，挡不住精心构造、混在正常内容里的诱导。把它当第一层过滤，别当保险。
 
 ## 状态
 
-- v2.1.0，零运行时依赖
-- `tests/gate.test.mjs` 四十来条断言
-- 失败语义单独分节：策略文件写错、域名解析失败、规则表为空，各自的行为都写清楚了
+- v2.1.1，零运行时依赖，纯函数
+- 两份实现同一套规则：`lib/gate.js`（插件用）和 `gate.py`（库 / CLI），各自的测试在 `tests/` 下，`node --test` 和 `python -m unittest` 都能跑
+- 失败语义单独分节：策略文件写错、域名解析失败、空内容，各自的行为都写清楚了（一律 fail closed）
+- 2.1.1 修了三个「装得上但工具不出来」的坑：`inject` 得是 `['tools']`、取服务用 `ctx.tools`、`output` 得带 `render`
 
 仓库：https://github.com/NotFatJustRound/input-gate
 
