@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 2.3.0
+
+按 issue #1 的三条实测问题修（围栏伪造 / 隐形字符漏区 / 硬规则误伤文档），另带三处小毛病。
+
+- **围栏改成带 nonce**：输出是 `<<<UNTRUSTED_TEXT:<nonce>>>>` … `<<<END_UNTRUSTED_TEXT:<nonce>>>>`，
+  nonce 每次调用随机（`newNonce()` / `new_nonce()`），也可由调用方传入以便复现。
+  正文里只要出现围栏写法（`<<<UNTRUSTED_TEXT`、`UNTRUSTED_TEXT>>>`、`<<<END_UNTRUSTED_TEXT`）直接
+  `reject · FENCE_FORGERY`；冒充来源横幅（`[UNTRUSTED SOURCE:`、`[REJECTED BY input-gate`）判
+  `BANNER_FORGERY`。只是文字里提到这个词、不带箭头的不拦。
+- **隐形字符补表**：新增 U+E0000–E007F（Tags 区）、U+FE00–FE0F、U+E0100–E01EF（变体选择符）、
+  U+034F、U+180E、U+2065–U+2069。Tags 区单独判 `reject · TAG_SMUGGLING`——变体选择符还有正经用途，
+  但 Tags 区除了 ASCII smuggling 没有别的用法。
+- **硬规则命中落在代码块内降级为 quarantine**：三反引号/波浪线围栏、或四空格缩进的代码行里命中
+  `SHELL_PIPE` / `EVAL_BLOB` / `FAKE_TAG` 等，不再整段吞掉正文，只隔离并保留告示。新配置项
+  `codeContextDowngrade`（默认 `true`，Python 侧 `code_context_downgrade`）。
+  代价写在已知局限里：把载荷包进代码块能把 reject 降成 quarantine。
+- `ROLE_SWAP` 收窄：要求后面跟身份词（助手/模型/AI/agent/角色…），`你现在是靠什么判断的？` 不再被隔离。
+- 截断按码点切：`maxChars` 卡在 emoji 中间时不会再留半个代理对；`droppedChars` 也按码点算。
+- Python CLI 兜住 `BrokenPipeError`：`python gate.py x.txt | head` 不再甩 traceback，按正常退出。
+- 新增 `tests/gate.v23.test.mjs`（13 条断言）；README 的已知局限一节随后补上。
+
 ## 2.2.0
 
 - 新增**防破甲层**：`ARMOR_RULES` 七条，专管「重排指令层级」的说法
