@@ -4,8 +4,10 @@
 
 按 issue #1 的三条实测问题修（围栏伪造 / 隐形字符漏区 / 硬规则误伤文档），另带三处小毛病。
 
-- **围栏改成带 nonce**：输出是 `<<<UNTRUSTED_TEXT:<nonce>>>>` … `<<<END_UNTRUSTED_TEXT:<nonce>>>>`，
-  nonce 每次调用随机（`newNonce()` / `new_nonce()`），也可由调用方传入以便复现。
+- **围栏改成带 nonce**：输出是 `<<<UNTRUSTED_TEXT:<nonce>>>>` … `<<<END_UNTRUSTED_TEXT:<nonce>>>>`。
+  nonce 默认每次调用随机（`newNonce()` / `new_nonce()`）；调用方注入 `fetchedAt` 时按
+  `source + fetchedAt` 派生（`derivedNonce()` / `derived_nonce()`），这样同样的输入与时间戳能得到同样的输出；
+  也可以用 `nonce` 参数直接钉死。**派生模式只是为了可复现，别在线上拿它当防护。**
   正文里只要出现围栏写法（`<<<UNTRUSTED_TEXT`、`UNTRUSTED_TEXT>>>`、`<<<END_UNTRUSTED_TEXT`）直接
   `reject · FENCE_FORGERY`；冒充来源横幅（`[UNTRUSTED SOURCE:`、`[REJECTED BY input-gate`）判
   `BANNER_FORGERY`。只是文字里提到这个词、不带箭头的不拦。
@@ -19,7 +21,8 @@
 - `ROLE_SWAP` 收窄：要求后面跟身份词（助手/模型/AI/agent/角色…），`你现在是靠什么判断的？` 不再被隔离。
 - 截断按码点切：`maxChars` 卡在 emoji 中间时不会再留半个代理对；`droppedChars` 也按码点算。
 - Python CLI 兜住 `BrokenPipeError`：`python gate.py x.txt | head` 不再甩 traceback，按正常退出。
-- 新增 `tests/gate.v23.test.mjs`（13 条断言）；README 的已知局限一节随后补上。
+- 结果结构新增 `nonce` 字段；新增 `fenceOpen/fenceClose`、`isInCodeContext`（Py 侧 `fence_open/fence_close`、`is_in_code_context`）导出。
+- 新增 `tests/gate.v23.test.mjs`（13 条断言）与 `tests/test_gate_v23.py`（11 条断言）；README 补「围栏与隐形字符」「代码块内的硬规则」两节和新配置项。
 
 ## 2.2.0
 
