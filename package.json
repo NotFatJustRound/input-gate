@@ -1,7 +1,7 @@
 {
   "name": "input-gate",
-  "version": "2.2.0",
-  "description": "给 agent 的外部输入套一道闸：来源横幅、长度封顶、注入与防破甲规则；硬规则命中时正文整段不交付。DeepSeek Harness 插件。",
+  "version": "2.3.0",
+  "description": "给 agent 的外部输入套一道闸：来源横幅、长度封顶、注入与防破甲规则、nonce 围栏；硬规则命中时正文整段不交付。DeepSeek Harness 插件。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -24,7 +24,7 @@
     }
   },
   "scripts": {
-    "test": "node --test tests/gate.test.mjs"
+    "test": "node --test tests/gate.test.mjs tests/gate.v23.test.mjs"
   },
   "keywords": [
     "deepseek-harness",
