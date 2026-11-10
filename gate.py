@@ -1,11 +1,18 @@
 """input-gate: 给 agent 的外部输入套一道闸。
 
 四道闸：来源标记 / 长度封顶 / 规则检查（硬规则与软规则）/ 防破甲层。
-三种裁决：pass / quarantine / reject——硬规则永远整段拒绝，软规则按档位降级。
+三种裁决：pass / quarantine / reject——硬规则整段拒绝，软规则按档位降级。
 
 防破甲层（v2.2）专门管"重排指令层级"这一类：覆盖系统设定、冒充授权方、
 宣称模型已被解除限制、给越狱话术换个壳。它不拦内容，但一定让这段内容
 留在"只是数据"的位置上。
+
+v2.3：
+- 围栏带随机 nonce，正文里出现围栏写法直接判 FENCE_FORGERY；冒充横幅判 BANNER_FORGERY。
+- 隐形字符表补齐 Tags 区与变体选择符；Tags 区一律 reject（它只用于 ASCII smuggling）。
+- 硬规则命中落在代码块内时降级为 quarantine（文档里的安装示例不等于攻击载荷）。
+- ROLE_SWAP 收窄到"后面跟身份词"，日常问句不再误伤。
+- CLI 输出遇到管道提前关闭不再甩 traceback。
 
 只用标准库。设计取舍见 README。
 """
@@ -13,7 +20,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import secrets
 import sys
 import time
 from dataclasses import dataclass, field, fields
@@ -53,11 +62,26 @@ DEFAULT_ALLOW_DOMAINS = frozenset(
     }
 )
 
+# 隐形/零宽字符：剥掉之后正文才拿去扫描。
 INVISIBLE_RANGES = (
+    (0x034F, 0x034F),
+    (0x180E, 0x180E),
     (0x200B, 0x200F),
     (0x202A, 0x202E),
-    (0x2060, 0x2064),
+    (0x2060, 0x2069),
+    (0xFE00, 0xFE0F),
     (0xFEFF, 0xFEFF),
+    (0xE0100, 0xE01EF),
+    (0xE0000, 0xE007F),
+)
+
+# Tags 区：变体选择符还能是 emoji 的一部分，这个区段只在 ASCII smuggling 里出现。
+TAG_RANGES = ((0xE0000, 0xE007F),)
+
+# 围栏/横幅伪造：只有带箭头的完整写法才算，光是提到这几个字不拦。
+FENCE_FORGERY_RE = re.compile(r"<<<\s*(END_)?UNTRUSTED_TEXT|UNTRUSTED_TEXT\s*>>>", re.IGNORECASE)
+BANNER_FORGERY_RE = re.compile(
+    r"\[UNTRUSTED\s+SOURCE:|\[REJECTED\s+BY\s+input-gate", re.IGNORECASE
 )
 
 
@@ -81,7 +105,7 @@ def _rule(code: str, pattern: str, severity: Verdict, note: str) -> Rule:
     return Rule(code, re.compile(pattern, re.IGNORECASE), severity, note)
 
 
-# 硬规则：任何档位都是 reject，正文不交付。
+# 硬规则：任何档位都是 reject，正文不交付。代码块内的命中降级为 quarantine。
 HARD_RULES: tuple[Rule, ...] = (
     _rule(
         "SHELL_PIPE",
@@ -132,7 +156,9 @@ SOFT_RULES: tuple[Rule, ...] = (
     ),
     _rule(
         "ROLE_SWAP",
-        r"(你现在是|从现在起你是|你的新(身份|角色|指令|设定)是|you\s+are\s+now\s+an?\s+)",
+        r"((从现在起|今后|接下来)[^\n]{0,6}(你是|你就是)[^\n]{0,8}(助手|模型|ai|机器人|agent|角色|人格|系统|平台)"
+        r"|你的新(身份|角色|人设|设定)是"
+        r"|you\s+are\s+now\s+(an?\s+)?(ai|assistant|model|bot|agent|jailbroken|dan))",
         Verdict.QUARANTINE,
         "角色劫持",
     ),
@@ -206,6 +232,7 @@ class Policy:
     max_base64_run: int = 200
     fence: bool = True
     armor: bool = True
+    code_context_downgrade: bool = True
 
     def __post_init__(self) -> None:
         if self.mode not in MODES:
@@ -248,6 +275,7 @@ class GateResult:
     truncated: bool = False
     dropped_chars: int = 0
     armor_hits: int = 0
+    nonce: str = ""
 
     @property
     def passed(self) -> bool:
@@ -289,9 +317,16 @@ def domain_ok(host: str, allow: Iterable[str]) -> bool:
     return any(host == d or host.endswith("." + d) for d in allow)
 
 
+def _in_ranges(cp: int, ranges: Iterable[tuple[int, int]]) -> bool:
+    return any(lo <= cp <= hi for lo, hi in ranges)
+
+
 def _is_invisible(ch: str) -> bool:
-    cp = ord(ch)
-    return any(lo <= cp <= hi for lo, hi in INVISIBLE_RANGES)
+    return _in_ranges(ord(ch), INVISIBLE_RANGES)
+
+
+def _is_tag_char(ch: str) -> bool:
+    return _in_ranges(ord(ch), TAG_RANGES)
 
 
 def _strip_invisible_chars(text: str) -> tuple[str, int]:
@@ -309,11 +344,40 @@ def _count_invisible(text: str) -> int:
     return sum(1 for ch in text if _is_invisible(ch))
 
 
+def _count_tags(text: str) -> int:
+    return sum(1 for ch in text if _is_tag_char(ch))
+
+
 def _long_base64(text: str, threshold: int) -> int:
     for blob in _BASE64_BLOB.findall(text):
         if len(blob) >= threshold:
             return len(blob)
     return 0
+
+
+def is_in_code_context(text: str, index: int) -> bool:
+    """命中位置是否落在代码块里（三反引号围栏，或四空格缩进的代码行）。"""
+    before = text[:index]
+    fences = re.findall(r"^[ \t]*(?:```|~~~)", before, re.MULTILINE)
+    if len(fences) % 2 == 1:
+        return True
+    line_start = before.rfind("\n") + 1
+    line_end = text.find("\n", index)
+    line = text[line_start : len(text) if line_end == -1 else line_end]
+    return bool(re.match(r"^( {4}|\t)", line))
+
+
+def new_nonce() -> str:
+    """围栏 nonce：不可预测，正文伪造不出来。"""
+    return secrets.token_hex(4)
+
+
+def fence_open(nonce: str) -> str:
+    return f"{FENCE_OPEN}:{nonce}>>>"
+
+
+def fence_close(nonce: str) -> str:
+    return f"<<<END_UNTRUSTED_TEXT:{nonce}>>>"
 
 
 def _soft_verdict(policy: Policy) -> Verdict:
@@ -360,8 +424,15 @@ def scan(text: str, policy: Policy) -> list[Reason]:
     reasons: list[Reason] = []
     for rule in HARD_RULES:
         match = rule.pattern.search(text)
-        if match:
-            reasons.append(Reason(rule.code, Verdict.REJECT, match.group(0)[:40]))
+        if not match:
+            continue
+        severity = Verdict.REJECT
+        detail = match.group(0)[:40]
+        if policy.code_context_downgrade and is_in_code_context(text, match.start()):
+            # 文档里的安装示例不该等于攻击载荷：降成隔离，正文照交付，但要带告示。
+            severity = Verdict.QUARANTINE
+            detail = f"code:{detail}"
+        reasons.append(Reason(rule.code, severity, detail))
     soft = _soft_verdict(policy)
     for rule in SOFT_RULES:
         match = rule.pattern.search(text)
@@ -403,6 +474,7 @@ def _render_text(
     reasons: list[Reason],
     policy: Policy,
     fetched_at: str | None,
+    nonce: str,
 ) -> str:
     codes = ",".join(_dedup(r.code for r in reasons)) or "none"
     banner = (
@@ -415,7 +487,7 @@ def _render_text(
     if any(r.code in ARMOR_CODES for r in reasons):
         lines.append(ARMOR_NOTE)
     if policy.fence:
-        lines.extend([FENCE_OPEN, body, FENCE_CLOSE])
+        lines.extend([fence_open(nonce), body, fence_close(nonce)])
     else:
         lines.append(body)
     return "\n".join(lines)
@@ -426,11 +498,17 @@ def gate(
     source: str = "",
     policy: Policy | None = None,
     fetched_at: str | None = None,
+    nonce: str | None = None,
 ) -> GateResult:
-    """过闸。fetched_at 可注入，用于让输出可复现。"""
+    """过闸。fetched_at / nonce 可注入，用于让输出可复现。"""
     policy = policy or Policy()
     raw = text or ""
     reasons: list[Reason] = []
+    fence_nonce = nonce or new_nonce()
+
+    tags = _count_tags(raw)
+    if tags:
+        reasons.append(Reason("TAG_SMUGGLING", Verdict.REJECT, str(tags)))
 
     if policy.strip_invisible:
         body, invisible = _strip_invisible_chars(raw)
@@ -438,6 +516,14 @@ def gate(
         body, invisible = raw, _count_invisible(raw)
     if invisible:
         reasons.append(Reason("INVISIBLE_CHARS", Verdict.QUARANTINE, str(invisible)))
+
+    # 围栏是数据与指令的边界：正文里出现围栏写法，说明有人在替我们关门。
+    forged = FENCE_FORGERY_RE.search(body)
+    if forged:
+        reasons.append(Reason("FENCE_FORGERY", Verdict.REJECT, forged.group(0)[:40]))
+    banner_forged = BANNER_FORGERY_RE.search(body)
+    if banner_forged:
+        reasons.append(Reason("BANNER_FORGERY", Verdict.REJECT, banner_forged.group(0)[:40]))
 
     reasons.extend(scan(body, policy))
 
@@ -464,7 +550,7 @@ def gate(
     if verdict is Verdict.REJECT:
         rendered = _render_reject(source, reasons)
     else:
-        rendered = _render_text(source, body, verdict, reasons, policy, fetched_at)
+        rendered = _render_text(source, body, verdict, reasons, policy, fetched_at, fence_nonce)
 
     return GateResult(
         text=rendered,
@@ -474,6 +560,7 @@ def gate(
         truncated=truncated,
         dropped_chars=dropped,
         armor_hits=armor_hits,
+        nonce=fence_nonce,
     )
 
 
@@ -482,6 +569,20 @@ def load_policy(path: str) -> Policy:
     with open(path, "r", encoding="utf-8") as fh:
         raw = json.load(fh)
     return Policy.from_dict(raw)
+
+
+def _safe_print(text: str, stream: object) -> bool:
+    """管道提前关闭（`gate.py x.txt | head`）不该甩 traceback。"""
+    try:
+        print(text, file=stream)  # type: ignore[arg-type]
+        return True
+    except BrokenPipeError:
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except OSError:
+            pass
+        return False
 
 
 def _main(argv: list[str]) -> int:
@@ -497,10 +598,11 @@ def _main(argv: list[str]) -> int:
         return 2
 
     result = gate(text, source=f"file://{argv[1]}", policy=policy)
-    print(result.text)
-    print(f"verdict: {result.verdict.value}", file=sys.stderr)
+    if not _safe_print(result.text, sys.stdout):
+        return 0
+    _safe_print(f"verdict: {result.verdict.value}", sys.stderr)
     for reason in result.reasons:
-        print(f"  {reason}", file=sys.stderr)
+        _safe_print(f"  {reason}", sys.stderr)
     return {
         Verdict.PASS: 0,
         Verdict.QUARANTINE: 3,
