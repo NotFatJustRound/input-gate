@@ -11,5 +11,7 @@
   "require_https": true,
   "strip_invisible": true,
   "max_base64_run": 200,
-  "fence": true
+  "fence": true,
+  "armor": true,
+  "code_context_downgrade": true
 }
