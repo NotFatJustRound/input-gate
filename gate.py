@@ -8,17 +8,21 @@
 留在"只是数据"的位置上。
 
 v2.3：
-- 围栏带随机 nonce，正文里出现围栏写法直接判 FENCE_FORGERY；冒充横幅判 BANNER_FORGERY。
+- 围栏带 nonce，正文里出现围栏写法直接判 FENCE_FORGERY；冒充横幅判 BANNER_FORGERY。
 - 隐形字符表补齐 Tags 区与变体选择符；Tags 区一律 reject（它只用于 ASCII smuggling）。
 - 硬规则命中落在代码块内时降级为 quarantine（文档里的安装示例不等于攻击载荷）。
 - ROLE_SWAP 收窄到"后面跟身份词"，日常问句不再误伤。
 - CLI 输出遇到管道提前关闭不再甩 traceback。
+
+nonce 的两种来源：默认随机（不可预测）；调用方注入 fetched_at 时按
+source+fetched_at 派生（可复现）。派生模式只用来让输出可复现，别在线上拿它当防护。
 
 只用标准库。设计取舍见 README。
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -368,8 +372,14 @@ def is_in_code_context(text: str, index: int) -> bool:
 
 
 def new_nonce() -> str:
-    """围栏 nonce：不可预测，正文伪造不出来。"""
+    """围栏 nonce：默认随机，正文伪造不出来。"""
     return secrets.token_hex(4)
+
+
+def derived_nonce(source: str, fetched_at: str) -> str:
+    """可复现模式下的 nonce：由 source + fetched_at 派生（可预测，只用于复现）。"""
+    digest = hashlib.sha256(f"{source}|{fetched_at}".encode("utf-8")).hexdigest()
+    return digest[:8]
 
 
 def fence_open(nonce: str) -> str:
@@ -500,11 +510,16 @@ def gate(
     fetched_at: str | None = None,
     nonce: str | None = None,
 ) -> GateResult:
-    """过闸。fetched_at / nonce 可注入，用于让输出可复现。"""
+    """过闸。注入 fetched_at 即「可复现模式」，nonce 也随之派生；nonce 可直接指定。"""
     policy = policy or Policy()
     raw = text or ""
     reasons: list[Reason] = []
-    fence_nonce = nonce or new_nonce()
+    if nonce:
+        fence_nonce = nonce
+    elif fetched_at:
+        fence_nonce = derived_nonce(source, fetched_at)
+    else:
+        fence_nonce = new_nonce()
 
     tags = _count_tags(raw)
     if tags:
